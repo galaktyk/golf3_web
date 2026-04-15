@@ -3,6 +3,7 @@ const ROOM_CODE_LEADING_DIGITS = '123456789';
 const ROOM_CODE_LENGTH = 4;
 const VIEWER_CODE_STORAGE_KEY = 'golf3.viewerGameClientCode';
 const CONTROLLER_CODE_STORAGE_KEY = 'golf3.controllerGameClientId';
+const CLIENT_ID_QUERY_PARAM = 'clientId';
 
 /**
  * Creates a short numeric room code so phone entry stays fast on a number keypad.
@@ -64,6 +65,34 @@ export function loadStoredControllerCode() {
  */
 export function saveStoredControllerCode(value) {
   saveStoredCode(CONTROLLER_CODE_STORAGE_KEY, value);
+}
+
+/**
+ * Reads a controller client id from the current URL so shared pairing links can prefill the phone page.
+ */
+export function loadControllerCodeFromUrl(location = window.location) {
+  try {
+    const search = typeof location?.search === 'string' ? location.search : '';
+    return normalizeRoomCode(new URLSearchParams(search).get(CLIENT_ID_QUERY_PARAM));
+  } catch (_error) {
+    return '';
+  }
+}
+
+/**
+ * Builds the controller deep link used by the viewer QR code and manual sharing flows.
+ */
+export function buildControllerUrl(clientId, location = window.location) {
+  const controllerUrl = new URL('../golf_club', location.href);
+  const normalizedClientId = normalizeRoomCode(clientId);
+
+  if (normalizedClientId) {
+    controllerUrl.searchParams.set(CLIENT_ID_QUERY_PARAM, normalizedClientId);
+  } else {
+    controllerUrl.searchParams.delete(CLIENT_ID_QUERY_PARAM);
+  }
+
+  return controllerUrl.toString();
 }
 
 function loadStoredCode(storageKey) {

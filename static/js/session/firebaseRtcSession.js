@@ -4,6 +4,7 @@ import {
   get,
   getDatabase,
   onChildAdded,
+  onDisconnect,
   onValue,
   push,
   ref,
@@ -290,6 +291,117 @@ function descriptionFromSnapshot(snapshotValue) {
 }
 
 /**
+ * Registers server-side disconnect cleanup so abrupt tab closes still release the room.
+ */
+async function registerDisconnectCleanup(operations) {
+  const disconnectHandles = [];
+
+  for (const operation of operations) {
+    const disconnectHandle = onDisconnect(operation.targetRef);
+    disconnectHandles.push(disconnectHandle);
+
+    if (operation.type === 'remove') {
+      await disconnectHandle.remove();
+      continue;
+    }
+
+    await disconnectHandle.update(operation.value);
+  }
+
+  return {
+    async cancel() {
+      await Promise.allSettled(disconnectHandles.map((disconnectHandle) => disconnectHandle.cancel()));
+    },
+  };
+}
+
+/**
+ * Clears the current controller claim only when the room is still owned by the expected guest.
+ */
+async function releaseGuestClaim(database, roomId, expectedGuestUid) {
+  if (!expectedGuestUid) {
+    return false;
+  }
+
+  const roomRef = ref(database, `rooms/${roomId}`);
+  const answerRef = ref(database, `rooms/${roomId}/descriptions/answer`);
+  const guestMailboxRef = ref(database, `rooms/${roomId}/mailboxes/${expectedGuestUid}`);
+  let released = false;
+
+  await runTransaction(roomRef, (currentRoom) => {
+    if (!currentRoom?.hostUid || currentRoom.guestUid !== expectedGuestUid) {
+      return currentRoom;
+    }
+
+    released = true;
+    return {
+      ...currentRoom,
+      guestUid: null,
+      state: 'waiting',
+      updatedAt: Date.now(),
+    };
+  });
+
+  if (!released) {
+    return false;
+  }
+
+  await Promise.allSettled([
+    remove(answerRef),
+    remove(guestMailboxRef),
+  ]);
+  return true;
+}
+
+/**
+ * Allows reconnect takeover whenever the viewer has not marked the current guest as fully connected.
+ */
+async function prepareControllerJoin(database, roomId, userUid) {
+  const roomRef = ref(database, `rooms/${roomId}`);
+  const roomSnapshot = await get(roomRef);
+
+  const room = roomSnapshot.val();
+  if (!room?.hostUid) {
+    throw new Error('Game client not found.');
+  }
+
+  if (room.guestUid && room.guestUid !== userUid) {
+    if (room.state === 'connected') {
+      throw new Error('Game client already in use.');
+    }
+
+    await releaseGuestClaim(database, roomId, room.guestUid);
+  }
+
+  const claimResult = await runTransaction(roomRef, (currentRoom) => {
+    if (!currentRoom?.hostUid) {
+      return currentRoom;
+    }
+
+    if (currentRoom.guestUid && currentRoom.guestUid !== userUid) {
+      return undefined;
+    }
+
+    return {
+      ...currentRoom,
+      guestUid: userUid,
+      state: 'join-requested',
+      updatedAt: Date.now(),
+    };
+  });
+
+  if (!claimResult.snapshot.val()?.hostUid) {
+    throw new Error('Game client not found.');
+  }
+
+  if (!claimResult.committed) {
+    throw new Error('Game client already in use.');
+  }
+
+  return claimResult.snapshot.val();
+}
+
+/**
  * Hosts a room, publishes the offer, and opens the two WebRTC data channels used by the viewer.
  */
 export async function createViewerRtcSession({
@@ -315,6 +427,21 @@ export async function createViewerRtcSession({
   let remoteUid = null;
   let remoteDescriptionApplied = false;
   const queuedCandidates = [];
+  let viewerDisconnectCleanup = null;
+  let remoteFailureCleanupPromise = null;
+  let lastPublishedRoomState = null;
+
+  const publishRoomState = (nextState) => {
+    if (lastPublishedRoomState === nextState) {
+      return;
+    }
+
+    lastPublishedRoomState = nextState;
+    void update(roomRef, {
+      state: nextState,
+      updatedAt: serverTimestamp(),
+    });
+  };
 
   const transport = createPeerConnection({
     mode: 'host',
@@ -322,9 +449,34 @@ export async function createViewerRtcSession({
     onSwingPacket,
     onControlMessage,
     onStateChange: (transportState) => {
+      const fullyConnected = transportState.swingChannelState === 'open'
+        && transportState.controlChannelState === 'open';
+
+      if (remoteUid) {
+        publishRoomState(fullyConnected ? 'connected' : 'connecting');
+      }
+
+      if (
+        remoteUid
+        && !remoteFailureCleanupPromise
+        && (transportState.connectionState === 'failed' || transportState.connectionState === 'closed')
+      ) {
+        remoteFailureCleanupPromise = releaseGuestClaim(database, roomId, remoteUid)
+          .finally(() => {
+            remoteFailureCleanupPromise = null;
+          });
+      }
+
       session.emitState(transportState);
     },
   });
+
+  viewerDisconnectCleanup = await registerDisconnectCleanup([
+    {
+      type: 'remove',
+      targetRef: roomRef,
+    },
+  ]);
 
   transport.peerConnection.addEventListener('icecandidate', (event) => {
     if (!event.candidate) {
@@ -349,6 +501,12 @@ export async function createViewerRtcSession({
   const unsubscribeRoom = onValue(roomRef, (snapshot) => {
     const room = snapshot.val();
     remoteUid = room?.guestUid ?? null;
+
+    if (!remoteUid) {
+      publishRoomState('offer-ready');
+      remoteDescriptionApplied = false;
+    }
+
     session.emitState({
       remoteUid,
       signalingState: remoteUid ? 'negotiating' : 'waiting-for-joiner',
@@ -400,10 +558,7 @@ export async function createViewerRtcSession({
   const offer = await transport.peerConnection.createOffer();
   await transport.peerConnection.setLocalDescription(offer);
   await set(offerRef, serializeDescription(transport.peerConnection.localDescription, user.uid));
-  await update(roomRef, {
-    state: 'offer-ready',
-    updatedAt: serverTimestamp(),
-  });
+  publishRoomState('offer-ready');
   session.emitState({ signalingState: 'waiting-for-joiner' });
 
   return {
@@ -417,10 +572,11 @@ export async function createViewerRtcSession({
     sendControlMessage(payload) {
       return transport.sendControlMessage(payload);
     },
-    close() {
+    async close() {
       session.closeCleanup();
+      await viewerDisconnectCleanup?.cancel();
       transport.close();
-      void remove(roomRef);
+      await remove(roomRef);
     },
   };
 }
@@ -443,22 +599,7 @@ export async function createControllerRtcSession({
   const user = await ensureAnonymousUser();
   const database = getDatabase(getFirebaseApp());
   const roomRef = ref(database, `rooms/${normalizedRoomId}`);
-  const roomSnapshot = await get(roomRef);
-  const room = roomSnapshot.val();
-
-  if (!room?.hostUid) {
-    throw new Error('Game client not found.');
-  }
-
-  if (room.guestUid && room.guestUid !== user.uid) {
-    throw new Error('Game client already in use.');
-  }
-
-  await update(roomRef, {
-    guestUid: user.uid,
-    state: 'join-requested',
-    updatedAt: serverTimestamp(),
-  });
+  const claimedRoom = await prepareControllerJoin(database, normalizedRoomId, user.uid);
 
   const session = createBaseSession({
     role: 'controller',
@@ -467,7 +608,7 @@ export async function createControllerRtcSession({
     onStateChange,
   });
   session.emitState({
-    remoteUid: room.hostUid,
+    remoteUid: claimedRoom.hostUid,
     signalingState: 'joining-room',
   });
 
@@ -475,6 +616,24 @@ export async function createControllerRtcSession({
   const offerRef = ref(database, `rooms/${normalizedRoomId}/descriptions/offer`);
   const answerRef = ref(database, `rooms/${normalizedRoomId}/descriptions/answer`);
   let localAnswerPublished = false;
+  const controllerDisconnectCleanup = await registerDisconnectCleanup([
+    {
+      type: 'update',
+      targetRef: roomRef,
+      value: {
+        guestUid: null,
+        state: 'waiting',
+      },
+    },
+    {
+      type: 'remove',
+      targetRef: answerRef,
+    },
+    {
+      type: 'remove',
+      targetRef: mailboxRef,
+    },
+  ]);
 
   const transport = createPeerConnection({
     mode: 'joiner',
@@ -491,7 +650,7 @@ export async function createControllerRtcSession({
       return;
     }
 
-    void sendMailboxMessage(database, normalizedRoomId, room.hostUid, {
+    void sendMailboxMessage(database, normalizedRoomId, claimedRoom.hostUid, {
       type: 'ice-candidate',
       fromUid: user.uid,
       candidate: event.candidate.toJSON(),
@@ -544,15 +703,19 @@ export async function createControllerRtcSession({
     sendControlMessage(payload) {
       return transport.sendControlMessage(payload);
     },
-    close() {
+    async close() {
       session.closeCleanup();
+      await controllerDisconnectCleanup.cancel();
       transport.close();
-      void update(roomRef, {
+      await update(roomRef, {
         guestUid: null,
         state: 'waiting',
         updatedAt: serverTimestamp(),
       });
-      void remove(answerRef);
+      await Promise.allSettled([
+        remove(answerRef),
+        remove(mailboxRef),
+      ]);
     },
   };
 }

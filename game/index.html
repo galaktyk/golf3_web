@@ -13,9 +13,19 @@
   <div class="viewer-fps-overlay" aria-live="polite" aria-label="Viewer framerate">
     <span id="viewer-fps" class="viewer-fps-value">0</span>
   </div>
-  <div class="viewer-client-code" aria-live="polite">
-    <span class="viewer-client-code-label">Game Client Code: </span>
-    <span id="viewer-room-code" class="viewer-client-code-value">----</span>
+  <div id="viewer-pairing-panel" class="viewer-client-code" aria-live="polite">
+    <div class="viewer-client-code-card">
+      <div class="viewer-client-code-copy">
+        <span class="viewer-client-code-label">Game Client Code</span>
+        <span id="viewer-room-code" class="viewer-client-code-value">----</span>
+      </div>
+      <img
+        id="viewer-room-qr-image"
+        class="viewer-room-qr-image"
+        alt=""
+        hidden
+      >
+    </div>
   </div>
   <div class="hud hud-bottom-right">
     <div class="panel panel-debug" id="viewer-debug-panel">

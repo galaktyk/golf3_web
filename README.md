@@ -2,6 +2,9 @@
 
 
 Game: https://galaktyk.github.io/golf3_web/game
+
+
+(make sure the phone is using the same network/wifi as the computer)
 Controller: https://galaktyk.github.io/golf3_web/golf_club
 
 
