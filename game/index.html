@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Golf Club Viewer</title>
+  <link rel="stylesheet" href="../static/css/app.css">
+</head>
+<body class="viewer-body">
+  <button id="viewer-debug-toggle" class="debug-toggle-button" aria-label="Toggle debug UI">
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bug"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c-2.1.2-3.7 1.9-3.7 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg>
+  </button>
+  <div class="viewer-fps-overlay" aria-live="polite" aria-label="Viewer framerate">
+    <span id="viewer-fps" class="viewer-fps-value">0</span>
+  </div>
+  <div class="viewer-client-code" aria-live="polite">
+    <span class="viewer-client-code-label">Game Client Code: </span>
+    <span id="viewer-room-code" class="viewer-client-code-value">------</span>
+  </div>
+  <div class="hud hud-bottom-right">
+    <div class="panel panel-debug" id="viewer-debug-panel">
+      <div class="panel-heading">
+        <p class="eyebrow">Viewer Debug</p>
+        <p id="viewer-status" class="panel-status-text">Waiting for phone connection</p>
+      </div>
+      <div class="debug-grid">
+        <span class="debug-label">Socket</span>
+        <span id="viewer-socket-state" class="debug-value">Connecting</span>
+        <span class="debug-label">Packet Rate</span>
+        <span id="viewer-packet-rate" class="debug-value">0.0 pkt/s</span>
+        <span class="debug-label">Quaternion</span>
+        <span id="viewer-quaternion" class="debug-value debug-value-wide">(0.000, 0.000, 0.000, 1.000)</span>
+        <span class="debug-label">Bone01</span>
+        <span id="viewer-bone01-quaternion" class="debug-value debug-value-wide">(0.000, 0.000, 0.000, 1.000)</span>
+        <span class="debug-label">Match</span>
+        <span id="viewer-match-frame" class="debug-value debug-value-wide">Frame 0 @ 0.000s</span>
+        <span class="debug-label">Ball</span>
+        <span id="viewer-ball-state" class="debug-value">waiting</span>
+        <span class="debug-label">Ball Speed</span>
+        <span id="viewer-ball-speed" class="debug-value">0.00 m/s</span>
+        <span class="debug-label">Last Landing</span>
+        <span id="viewer-ball-landing-debug" class="debug-value debug-value-wide">-</span>
+        <span class="debug-label">Landing Components</span>
+        <span id="viewer-ball-landing-components" class="debug-value debug-value-wide">-</span>
+        <span class="debug-label">Landing Normals</span>
+        <span id="viewer-ball-landing-normals" class="debug-value debug-value-wide">-</span>
+        <span class="debug-label">Camera</span>
+        <span id="viewer-camera-position" class="debug-value debug-value-wide">(0.000, 0.000, 0.000)</span>
+      </div>
+    </div>
+  </div>
+  <div id="viewer-launch-panel" class="hud hud-right" hidden>
+    <div class="panel panel-debug" id="viewer-launch-debug-panel">
+      <div class="panel-heading">
+        <p class="eyebrow">Launch Debug</p>
+        <p id="viewer-launch-debug-message" class="panel-status-text">Edit the launch values, then click Launch or press L.</p>
+      </div>
+      <div class="debug-grid">
+        <span class="debug-label">Player</span>
+        <span id="viewer-player-state" class="debug-value">control</span>
+        <span class="debug-label">Ball Phase</span>
+        <span id="viewer-ball-phase" class="debug-value">ready</span>
+        <span class="debug-label">Ball Move</span>
+        <span id="viewer-ball-movement" class="debug-value">-</span>
+      </div>
+      <div class="launch-debug-controls">
+        <div class="launch-debug-field-grid">
+          <label class="launch-debug-field">
+            <span class="debug-label">Ball Speed</span>
+            <input id="viewer-launch-ball-speed-input" class="launch-debug-input" type="number" step="1" inputmode="decimal" autocomplete="off" value="40.2">
+          </label>
+          <label class="launch-debug-field">
+            <span class="debug-label">Vertical LA</span>
+            <input id="viewer-launch-vertical-angle-input" class="launch-debug-input" type="number" step="1" inputmode="decimal" autocomplete="off" value="15.4">
+          </label>
+          <label class="launch-debug-field">
+            <span class="debug-label">Horizontal LA (+R)</span>
+            <input id="viewer-launch-horizontal-angle-input" class="launch-debug-input" type="number" step="1" inputmode="decimal" autocomplete="off" value="0">
+          </label>
+          <label class="launch-debug-field">
+            <span class="debug-label">Spin Speed</span>
+            <input id="viewer-launch-spin-speed-input" class="launch-debug-input" type="number" step="1" inputmode="decimal" autocomplete="off" value="3021">
+          </label>
+          <label class="launch-debug-field">
+            <span class="debug-label">Spin Axis</span>
+            <input id="viewer-launch-spin-axis-input" class="launch-debug-input" type="number" step="0.1" inputmode="decimal" autocomplete="off" value="-0.5">
+          </label>
+        </div>
+        <div class="launch-debug-actions">
+          <button id="viewer-launch-debug-button" class="action-button secondary launch-debug-button" type="button">Launch (L)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewer-club-panel" class="hud hud-bottom-left">
+    <div id="viewer-club-shell" class="club-panel-shell is-collapsed">
+      <div class="panel panel-static panel-club panel-club-main">
+        <div class="club-panel-left">
+          <div class="panel-heading club-panel-heading">
+            <p id="viewer-club-set-line" class="panel-status-text">Air Lance Set</p>
+          </div>
+          <div id="viewer-club-button-row" class="club-button-row" role="group" aria-label="Direct club selection"></div>
+          <div class="club-selector-row" aria-label="Club selector">
+            <button id="viewer-club-prev-button" class="action-button secondary club-selector-button" type="button" aria-label="Previous club">&lt;</button>
+            <p id="viewer-club-id" class="club-selector-value">1W</p>
+            <button id="viewer-club-next-button" class="action-button secondary club-selector-button" type="button" aria-label="Next club">&gt;</button>
+          </div>
+        </div>
+      </div>
+      <button
+        id="viewer-club-detail-toggle"
+        class="club-panel-toggle"
+        type="button"
+        aria-label="Show club details"
+        aria-controls="viewer-club-details"
+        aria-expanded="false"
+      >&gt;</button>
+      <div
+        id="viewer-club-details"
+        class="panel panel-static club-panel-details"
+        aria-hidden="true"
+      >
+        <div class="debug-grid club-detail-grid">
+          <span class="debug-label">Loft</span>
+          <span id="viewer-club-loft" class="debug-value">10.5°</span>
+          <span class="debug-label">Launch Factor</span>
+          <span id="viewer-club-launch-factor" class="debug-value">0.9</span>
+          <span class="debug-label">Loft Influence</span>
+          <span id="viewer-club-orientation-loft-influence" class="debug-value">0.35</span>
+          <span class="debug-label">Max Loft Delta</span>
+          <span id="viewer-club-max-dynamic-loft-delta" class="debug-value">8°</span>
+          <span class="debug-label">Length</span>
+          <span id="viewer-club-effective-length" class="debug-value">1.03 m</span>
+          <span class="debug-label">Smash Factor</span>
+          <span id="viewer-club-smash-factor" class="debug-value">1.47</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewer-swing-preview-panel" class="hud hud-left-center">
+    <div class="panel panel-static panel-swing-preview">
+      <div class="swing-preview-layout">
+        <div class="swing-preview-figure">
+          <div class="swing-preview-target-anchor" aria-live="polite">
+            <span class="debug-label">Target</span>
+            <span id="viewer-swing-preview-target-speed" class="debug-value swing-preview-target-speed">-</span>
+          </div>
+          <div class="swing-preview-meter-stack">
+            <div
+              id="viewer-swing-preview-horizontal-bar"
+              class="swing-preview-horizontal-bar"
+              role="img"
+              aria-label="Horizontal launch angle preview, positive values shown to the right"
+            >
+              <div
+                id="viewer-swing-preview-horizontal-pangya-zone"
+                class="swing-preview-horizontal-pangya-zone"
+                aria-hidden="true"
+              ></div>
+              <div
+                id="viewer-swing-preview-horizontal-marker"
+                class="swing-preview-horizontal-marker"
+                aria-hidden="true"
+              ></div>
+            </div>
+            <div class="swing-preview-speed-row">
+              <div
+                id="viewer-swing-preview-bar"
+                class="swing-preview-bar"
+                role="img"
+                aria-label="Last swing speed compared to target speed"
+              >
+                <div id="viewer-swing-preview-fill" class="swing-preview-fill"></div>
+                <div id="viewer-swing-preview-target-line" class="swing-preview-target-line" aria-hidden="true"></div>
+              </div>
+              <div
+                id="viewer-swing-preview-head-speed-anchor"
+                class="swing-preview-head-speed-anchor"
+                aria-live="polite"
+                hidden
+              >
+                <span id="viewer-preview-club-speed" class="debug-value swing-preview-head-speed">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div
+    id="viewer-swing-preview-detail-shell"
+    class="hud hud-right-center swing-preview-detail-shell is-collapsed"
+    hidden
+  >
+    <div
+      id="viewer-swing-preview-details"
+      class="panel panel-static swing-preview-details"
+      aria-hidden="true"
+    >
+      <div class="debug-grid swing-preview-meta-grid">
+        <span class="debug-label">Ball</span>
+        <span id="viewer-preview-ball-speed" class="debug-value">-</span>
+        <span class="debug-label">Spin</span>
+        <span id="viewer-preview-spin-rpm" class="debug-value">-</span>
+        <span class="debug-label">Hor LA</span>
+        <span id="viewer-preview-horizontal-launch-angle" class="debug-value">-</span>
+        <span class="debug-label">Face Pitch</span>
+        <span id="viewer-preview-face-pitch" class="debug-value">-</span>
+        <span class="debug-label">Dyn Loft</span>
+        <span id="viewer-preview-dynamic-loft" class="debug-value">-</span>
+        <span class="debug-label">Launch</span>
+        <span id="viewer-preview-launch-angle" class="debug-value">-</span>
+      </div>
+    </div>
+  </div>
+  <button
+    id="viewer-swing-preview-detail-toggle"
+    class="swing-preview-detail-toggle"
+    type="button"
+    aria-label="Show launch details"
+    aria-controls="viewer-swing-preview-details"
+    aria-expanded="false"
+  >&lt;</button>
+  <canvas id="scene"></canvas>
+  <script type="importmap">
+    {
+      "imports": {
+        "/static/js/": "../static/js/",
+        "three": "https://cdn.jsdelivr.net/npm/three@0.183.2/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.183.2/examples/jsm/",
+        "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+        "firebase/database": "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js"
+      }
+    }
+  </script>
+  <script type="module" src="../static/js/game.js"></script>
+</body>
+</html>
