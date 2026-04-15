@@ -7,6 +7,24 @@
   <link rel="stylesheet" href="./static/css/app.css">
 </head>
 <body class="controller-body golf-club-body">
+  <section id="pairing-gate" class="pairing-gate" role="dialog" aria-modal="true" aria-labelledby="pairing-gate-title">
+    <div class="pairing-gate-backdrop" aria-hidden="true"></div>
+    <section class="pairing-gate-panel panel">
+      <div class="panel-heading pairing-gate-heading">
+        <p class="eyebrow">Controller Link</p>
+        <h1 id="pairing-gate-title" class="pairing-gate-title">Connect golf club</h1>
+        <p class="pairing-gate-copy">Enter the game client id before using the controller.</p>
+      </div>
+      <p id="pairing-gate-status" class="status-pill pairing-gate-status">Offline</p>
+      <label class="pairing-field" for="room-code-input">
+        <span class="debug-label">Game client id</span>
+        <input id="room-code-input" class="launch-debug-input pairing-code-input" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="4" placeholder="1234">
+      </label>
+      <div class="pairing-gate-actions">
+        <button id="connect-button" class="action-button primary pairing-gate-button">Connect</button>
+      </div>
+    </section>
+  </section>
   <main class="controller-shell">
     <section class="controller-corner-actions" aria-label="Swing mode controls">
       <button id="practice-swing-button" class="action-button mode-button practice-mode-button" disabled>
@@ -28,18 +46,11 @@
       <section class="controller-dock">
         <section class="panel controls-panel">
           <p id="controller-status" class="status-pill">Offline</p>
-          <div class="pairing-field-grid">
-            <label class="pairing-field" for="room-code-input">
-              <span class="debug-label">Game client id</span>
-              <input id="room-code-input" class="launch-debug-input pairing-code-input" type="text" inputmode="latin" autocomplete="one-time-code" maxlength="6" placeholder="ABC123">
-            </label>
-          </div>
           <div class="control-row club-row">
             <button id="club-prev-button" class="action-button secondary club-button" disabled aria-label="Previous club">Club -</button>
             <button id="club-next-button" class="action-button secondary club-button" disabled aria-label="Next club">Club +</button>
           </div>
-          <div class="control-row control-row-top dock-actions-row">
-            <button id="connect-button" class="action-button primary">Connect</button>
+          <div class="control-row dock-actions-row">
             <button id="calibrate-button" class="action-button secondary" disabled>Set Forward</button>
           </div>
         </section>

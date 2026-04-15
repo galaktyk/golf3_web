@@ -1,29 +1,41 @@
-const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const ROOM_CODE_LENGTH = 6;
+const ROOM_CODE_DIGITS = '0123456789';
+const ROOM_CODE_LEADING_DIGITS = '123456789';
+const ROOM_CODE_LENGTH = 4;
 const VIEWER_CODE_STORAGE_KEY = 'golf3.viewerGameClientCode';
 const CONTROLLER_CODE_STORAGE_KEY = 'golf3.controllerGameClientId';
 
 /**
- * Creates a short room code without ambiguous characters so phone entry stays practical.
+ * Creates a short numeric room code so phone entry stays fast on a number keypad.
  */
 export function generateRoomCode(length = ROOM_CODE_LENGTH) {
+  if (length <= 0) {
+    return '';
+  }
+
   let roomCode = '';
   for (let index = 0; index < length; index += 1) {
-    const randomIndex = Math.floor(Math.random() * ROOM_CODE_ALPHABET.length);
-    roomCode += ROOM_CODE_ALPHABET[randomIndex];
+    const digitAlphabet = index === 0 ? ROOM_CODE_LEADING_DIGITS : ROOM_CODE_DIGITS;
+    const randomIndex = Math.floor(Math.random() * digitAlphabet.length);
+    roomCode += digitAlphabet[randomIndex];
   }
 
   return roomCode;
 }
 
 /**
- * Normalizes user-entered room codes to the canonical uppercase, alphanumeric format.
+ * Normalizes user-entered room codes to the canonical numeric format.
  */
 export function normalizeRoomCode(value) {
   return String(value ?? '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
+    .replace(/\D/g, '')
     .slice(0, ROOM_CODE_LENGTH);
+}
+
+/**
+ * Returns true when a room code contains exactly the required number of digits.
+ */
+export function isCompleteRoomCode(value) {
+  return normalizeRoomCode(value).length === ROOM_CODE_LENGTH;
 }
 
 /**

@@ -15,7 +15,7 @@ import {
 } from 'firebase/database';
 
 import { defaultIceServers, firebaseConfig } from '/static/js/session/firebaseConfig.js';
-import { generateRoomCode, normalizeRoomCode } from '/static/js/session/roomCode.js';
+import { generateRoomCode, isCompleteRoomCode, normalizeRoomCode } from '/static/js/session/roomCode.js';
 
 const SWING_CHANNEL_LABEL = 'swing';
 const CONTROL_CHANNEL_LABEL = 'control';
@@ -62,7 +62,7 @@ async function ensureAnonymousUser() {
 async function createUniqueRoom(database, hostUid, preferredRoomId = '') {
   const attemptedRoomIds = new Set();
   const normalizedPreferredRoomId = normalizeRoomCode(preferredRoomId);
-  if (normalizedPreferredRoomId) {
+  if (isCompleteRoomCode(normalizedPreferredRoomId)) {
     attemptedRoomIds.add(normalizedPreferredRoomId);
     const preferredReservation = await tryReserveRoom(database, normalizedPreferredRoomId, hostUid);
     if (preferredReservation.committed) {
@@ -436,8 +436,8 @@ export async function createControllerRtcSession({
   onStateChange,
 }) {
   const normalizedRoomId = normalizeRoomCode(roomId);
-  if (!normalizedRoomId) {
-    throw new Error('Enter a game client id first.');
+  if (!isCompleteRoomCode(normalizedRoomId)) {
+    throw new Error('Enter the 4-digit game client id first.');
   }
 
   const user = await ensureAnonymousUser();

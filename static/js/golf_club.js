@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CONTROL_ACTIONS, encodeControlMessage, encodeJoystickMessage, encodeSwingStatePacket } from '/static/js/protocol.js';
 import { createControllerRtcSession } from '/static/js/session/firebaseRtcSession.js';
 import {
+  isCompleteRoomCode,
   loadStoredControllerCode,
   normalizeRoomCode,
   saveStoredControllerCode,
@@ -14,6 +15,9 @@ const clubPrevButton = document.querySelector('#club-prev-button');
 const clubNextButton = document.querySelector('#club-next-button');
 const practiceSwingButton = document.querySelector('#practice-swing-button');
 const actualSwingButton = document.querySelector('#actual-swing-button');
+const pairingGate = document.querySelector('#pairing-gate');
+const pairingGateStatus = document.querySelector('#pairing-gate-status');
+const controllerShell = document.querySelector('.controller-shell');
 const joystickZone = document.querySelector('#aim-joystick');
 const joystickVisual = joystickZone?.querySelector('.aim-joystick-visual');
 const joystickKnob = joystickZone?.querySelector('.aim-joystick-knob');
@@ -75,6 +79,7 @@ let packetSequence = 0;
 
 neutralInverse.identity();
 installButtonFocusGuard();
+setStatus(statusLabel?.textContent?.trim() || 'Offline');
 
 connectButton.addEventListener('click', async () => {
   await connectWithMotion();
@@ -91,12 +96,12 @@ window.addEventListener('beforeunload', () => {
 
 calibrateButton.addEventListener('click', () => {
   if (!hasOrientation) {
-    statusLabel.textContent = 'Move phone';
+    setStatus('Move phone');
     return;
   }
 
   neutralInverse.copy(rawQuaternion).invert();
-  statusLabel.textContent = 'Forward set';
+  setStatus('Forward set');
 });
 
 clubPrevButton.addEventListener('click', () => {
@@ -121,6 +126,8 @@ setControlButtonsEnabled(false);
 if (roomCodeInput) {
   roomCodeInput.value = loadStoredControllerCode();
 }
+
+updatePairingGate();
 
 if (orientationEventName) {
   window.addEventListener(orientationEventName, (event) => {
@@ -197,7 +204,7 @@ setInterval(() => {
 
 async function enableMotion() {
   if (!orientationEventName || !motionEventName) {
-    statusLabel.textContent = getUnsupportedMessage();
+    setStatus(getUnsupportedMessage());
     return false;
   }
 
@@ -215,13 +222,13 @@ async function enableMotion() {
     }
   } catch (error) {
     motionEnabled = false;
-    statusLabel.textContent = 'Motion error';
+    setStatus('Motion error');
     debugLabel.textContent = error.message;
     return false;
   }
 
   if (!motionEnabled) {
-    statusLabel.textContent = 'Motion denied';
+    setStatus('Motion denied');
     calibrateButton.disabled = true;
     return false;
   }
@@ -232,25 +239,27 @@ async function enableMotion() {
 
 async function connectWithMotion() {
   const roomCode = normalizeRoomCode(roomCodeInput?.value);
-  if (!roomCode) {
-    statusLabel.textContent = 'Enter client id';
-    roomCodeInput?.focus();
+  if (!isCompleteRoomCode(roomCode)) {
+    setStatus('Enter 4 digits');
+    updatePairingGate();
     return;
   }
 
   connectButton.disabled = true;
+  updatePairingGate();
 
   try {
     const motionReady = await enableMotion();
     if (!motionReady) {
       updateConnectionStatus();
+      updatePairingGate();
       return;
     }
 
     controllerSession?.close();
     controllerSession = null;
     controllerSessionState = null;
-    statusLabel.textContent = 'Joining';
+    setStatus('Joining');
     debugLabel.textContent = `joining game client ${roomCode}`;
     saveStoredControllerCode(roomCode);
     controllerSession = await createControllerRtcSession({
@@ -261,12 +270,13 @@ async function connectWithMotion() {
     updateConnectionStatus();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to join room.';
-    statusLabel.textContent = 'Connect error';
+    setStatus('Connect error');
     debugLabel.textContent = message;
     setControlButtonsEnabled(false);
     releaseAimJoystick();
   } finally {
     connectButton.disabled = false;
+    updatePairingGate();
   }
 }
 
@@ -288,6 +298,31 @@ function handleControllerSessionState(nextState) {
   }
 
   updateConnectionStatus();
+  updatePairingGate();
+}
+
+/**
+ * Keeps the landing modal visible until the control channel is open so the playfield cannot be used prematurely.
+ */
+function updatePairingGate() {
+  if (!pairingGate) {
+    return;
+  }
+
+  const gateOpen = controllerSessionState?.controlChannelState !== 'open';
+  pairingGate.hidden = !gateOpen;
+
+  if (controllerShell) {
+    if ('inert' in controllerShell) {
+      controllerShell.inert = gateOpen;
+    }
+
+    controllerShell.setAttribute('aria-hidden', String(gateOpen));
+  }
+
+  if (pairingGateStatus) {
+    pairingGateStatus.textContent = statusLabel?.textContent?.trim() || 'Offline';
+  }
 }
 
 function bindAimJoystick() {
@@ -388,41 +423,49 @@ function setControlButtonsEnabled(enabled) {
   }
 }
 
+function setStatus(text) {
+  statusLabel.textContent = text;
+
+  if (pairingGateStatus) {
+    pairingGateStatus.textContent = text;
+  }
+}
+
 function updateConnectionStatus() {
   const orientationReady = controllerSessionState?.swingChannelState === 'open';
   const controlReady = controllerSessionState?.controlChannelState === 'open';
 
   if (controllerSessionState?.errorMessage) {
-    statusLabel.textContent = 'Link error';
+    setStatus('Link error');
     return;
   }
 
   if (!orientationReady && !controlReady) {
     if (controllerSessionState?.signalingState === 'joining-room' || controllerSessionState?.signalingState === 'connecting') {
-      statusLabel.textContent = 'Pairing';
+      setStatus('Pairing');
       return;
     }
 
-    statusLabel.textContent = 'Offline';
+    setStatus('Offline');
     return;
   }
 
   if (!orientationReady) {
-    statusLabel.textContent = 'Controls only';
+    setStatus('Controls only');
     return;
   }
 
   if (!controlReady) {
-    statusLabel.textContent = motionEnabled ? 'Motion only' : 'Enable motion';
+    setStatus(motionEnabled ? 'Motion only' : 'Enable motion');
     return;
   }
 
   if (!hasMotion && motionEventName) {
-    statusLabel.textContent = 'Gyro wait';
+    setStatus('Gyro wait');
     return;
   }
 
-  statusLabel.textContent = motionEnabled ? 'Live' : 'Enable motion';
+  setStatus(motionEnabled ? 'Live' : 'Enable motion');
 }
 
 function getInstantaneousPerpendicularAngularSpeedRadiansPerSecond(rotationRate) {

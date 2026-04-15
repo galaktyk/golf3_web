@@ -364,11 +364,13 @@ export function createAimingPreviewController({ viewerScene, hud, ballPhysics, g
     if (usesLaunchAimingPreview()) {
       puttPreviewPinnedRowCount = null;
       syncLaunchPreviewHeadSpeedToAimingTarget(ballPosition);
+      syncSwingPreviewTarget();
       return;
     }
 
     syncPuttAimDistanceToAimingTarget();
     pinPuttPreviewRowCount(ballPosition);
+    syncSwingPreviewTarget();
   };
 
   const syncPuttAimDistanceToAimingTarget = () => {

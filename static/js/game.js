@@ -246,7 +246,7 @@ async function startViewerSession() {
   viewerSession = null;
   lastViewerTransportState = null;
   hasIncomingOrientation = false;
-  roomCodeLabel.textContent = '------';
+  roomCodeLabel.textContent = '----';
   hud.updateSocketState('Connecting');
   hud.updatePacketRate(0);
   handleRemoteControlDisconnect();

@@ -230,6 +230,72 @@ body::before {
   overflow: hidden;
 }
 
+.pairing-gate {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 20px)
+    max(16px, env(safe-area-inset-right, 0px))
+    calc(env(safe-area-inset-bottom, 0px) + 20px)
+    max(16px, env(safe-area-inset-left, 0px));
+  overflow: auto;
+}
+
+.pairing-gate-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at top, rgba(119, 210, 255, 0.28), transparent 32%),
+    linear-gradient(180deg, rgba(6, 17, 28, 0.84), rgba(8, 18, 28, 0.92));
+  backdrop-filter: blur(10px);
+}
+
+.pairing-gate-panel {
+  position: relative;
+  z-index: 1;
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.pairing-gate-heading {
+  margin-bottom: 0;
+}
+
+.pairing-gate-title {
+  font-size: clamp(2rem, 9vw, 3rem);
+}
+
+.pairing-gate-copy {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.pairing-gate-status {
+  justify-self: start;
+}
+
+.pairing-gate-actions {
+  display: grid;
+}
+
+.pairing-gate-button {
+  min-height: 56px;
+  font-size: 0.95rem;
+}
+
 .controller-playfield {
   min-height: 0;
   display: flex;
