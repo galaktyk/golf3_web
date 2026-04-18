@@ -2,6 +2,7 @@ const ROOM_CODE_DIGITS = '0123456789';
 const ROOM_CODE_LEADING_DIGITS = '123456789';
 const ROOM_CODE_LENGTH = 4;
 const VIEWER_CODE_STORAGE_KEY = 'golf3.viewerGameClientCode';
+const VIEWER_HOST_ID_STORAGE_KEY = 'golf3.viewerHostClientId';
 const CONTROLLER_CODE_STORAGE_KEY = 'golf3.controllerGameClientId';
 const CLIENT_ID_QUERY_PARAM = 'clientId';
 
@@ -51,6 +52,24 @@ export function loadStoredViewerCode() {
  */
 export function saveStoredViewerCode(value) {
   saveStoredCode(VIEWER_CODE_STORAGE_KEY, value);
+}
+
+/**
+ * Returns a stable browser-local viewer host id so refreshes can recognize the same host.
+ */
+export function ensureStoredViewerHostId() {
+  try {
+    const existingHostId = normalizeStoredIdentifier(window.localStorage.getItem(VIEWER_HOST_ID_STORAGE_KEY));
+    if (existingHostId) {
+      return existingHostId;
+    }
+
+    const createdHostId = createStoredIdentifier();
+    window.localStorage.setItem(VIEWER_HOST_ID_STORAGE_KEY, createdHostId);
+    return createdHostId;
+  } catch (_error) {
+    return createStoredIdentifier();
+  }
 }
 
 /**
@@ -115,4 +134,19 @@ function saveStoredCode(storageKey, value) {
   } catch (_error) {
     // Storage access is best-effort because some browsers block it in private contexts.
   }
+}
+
+function normalizeStoredIdentifier(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '');
+}
+
+function createStoredIdentifier() {
+  const randomUuid = typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : `viewer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+  return normalizeStoredIdentifier(randomUuid);
 }

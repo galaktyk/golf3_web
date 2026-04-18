@@ -36,28 +36,47 @@ export function resolveClubBallImpact(
   ballPosition,
   estimatedClubHeadSpeedMetersPerSecond,
   activeClub = null,
+  debugInfo = null,
 ) {
   const history = characterTelemetry.clubHeadSampleHistory;
+  assignImpactDebugInfo(debugInfo, {
+    reason: 'unknown',
+    historyLength: history?.length ?? 0,
+    estimatedClubHeadSpeedMetersPerSecond,
+    minimumImpactSpeedMetersPerSecond: getImpactMinSpeedMetersPerSecond(activeClub),
+    geometryRejectCount: 0,
+    backwardSweepRejectCount: 0,
+    closestForwardAlignment: null,
+  });
   if (!history || history.length === 0) {
+    assignImpactDebugInfo(debugInfo, { reason: 'no_history' });
     return null;
   }
 
   if (!Number.isFinite(estimatedClubHeadSpeedMetersPerSecond) || estimatedClubHeadSpeedMetersPerSecond <= 0) {
+    assignImpactDebugInfo(debugInfo, { reason: 'invalid_speed' });
     return null;
   }
 
   if (estimatedClubHeadSpeedMetersPerSecond < getImpactMinSpeedMetersPerSecond(activeClub)) {
+    assignImpactDebugInfo(debugInfo, { reason: 'below_min_speed' });
     return null;
   }
 
-  const impactSample = findImpactSample(history, ballPosition, CLUB_HEAD_COLLIDER_RADIUS + BALL_RADIUS);
+  const impactSample = findImpactSample(
+    history,
+    ballPosition,
+    CLUB_HEAD_COLLIDER_RADIUS + BALL_RADIUS,
+    debugInfo,
+  );
   if (!impactSample) {
+    if (debugInfo?.reason === 'unknown') {
+      assignImpactDebugInfo(debugInfo, { reason: 'no_valid_contact' });
+    }
     return null;
   }
 
-  if (!isAllowedImpactGeometry(impactSample, ballPosition)) {
-    return null;
-  }
+  assignImpactDebugInfo(debugInfo, { reason: 'accepted' });
 
   const resolvedImpactSample = {
     ...impactSample,
@@ -145,8 +164,11 @@ function buildLaunchPreview(impactSample, activeClub, launchMetrics = null) {
   };
 }
 
-function findImpactSample(history, ballPosition, contactDistance) {
-  for (let index = 1; index < history.length; index += 1) {
+function findImpactSample(history, ballPosition, contactDistance, debugInfo = null) {
+  /**
+   * Search newest-to-oldest so low-FPS history does not let an older graze reject a later valid strike.
+   */
+  for (let index = history.length - 1; index >= 1; index -= 1) {
     const startSample = history[index - 1];
     const endSample = history[index];
     const contactAlpha = getSegmentSphereContactAlpha(
@@ -164,11 +186,38 @@ function findImpactSample(history, ballPosition, contactDistance) {
     if (SEGMENT_SWEEP.lengthSq() > 1e-10) {
       SEGMENT_START_TO_BALL.subVectors(ballPosition, startSample.position);
       if (SEGMENT_SWEEP.dot(SEGMENT_START_TO_BALL) <= 0) {
+        if (debugInfo) {
+          debugInfo.backwardSweepRejectCount += 1;
+        }
         continue;
       }
     }
 
-    return interpolateClubHeadSample(startSample, endSample, contactAlpha);
+    const impactSample = interpolateClubHeadSample(startSample, endSample, contactAlpha);
+    const forwardAlignment = getImpactForwardAlignment(impactSample, ballPosition);
+    if (!Number.isFinite(forwardAlignment)) {
+      if (debugInfo) {
+        debugInfo.geometryRejectCount += 1;
+        debugInfo.reason = 'degenerate_contact_direction';
+      }
+      continue;
+    }
+
+    if (debugInfo) {
+      debugInfo.closestForwardAlignment = Number.isFinite(debugInfo.closestForwardAlignment)
+        ? Math.max(debugInfo.closestForwardAlignment, forwardAlignment)
+        : forwardAlignment;
+    }
+
+    if (forwardAlignment < CLUB_HEAD_CONTACT_MIN_FORWARD_ALIGNMENT) {
+      if (debugInfo) {
+        debugInfo.geometryRejectCount += 1;
+        debugInfo.reason = 'forward_alignment_reject';
+      }
+      continue;
+    }
+
+    return impactSample;
   }
 
   return null;
@@ -471,6 +520,14 @@ function getLaunchDirection(impactSample) {
 }
 
 function isAllowedImpactGeometry(impactSample, ballPosition) {
+  return Number.isFinite(getImpactForwardAlignment(impactSample, ballPosition))
+    && getImpactForwardAlignment(impactSample, ballPosition) >= CLUB_HEAD_CONTACT_MIN_FORWARD_ALIGNMENT;
+}
+
+/**
+ * Returns the horizontal forward alignment used by impact gating so callers can log near-miss geometry.
+ */
+function getImpactForwardAlignment(impactSample, ballPosition) {
   FORWARD_ALIGNMENT_DIRECTION.copy(impactSample.characterFacingForward);
   FORWARD_ALIGNMENT_DIRECTION.y = 0;
   if (FORWARD_ALIGNMENT_DIRECTION.lengthSq() <= 1e-8) {
@@ -484,9 +541,17 @@ function isAllowedImpactGeometry(impactSample, ballPosition) {
 
   HORIZONTAL_CONTACT_DIRECTION.y = 0;
   if (HORIZONTAL_CONTACT_DIRECTION.lengthSq() <= 1e-8) {
-    return false;
+    return null;
   }
 
   HORIZONTAL_CONTACT_DIRECTION.normalize();
-  return HORIZONTAL_CONTACT_DIRECTION.dot(FORWARD_ALIGNMENT_DIRECTION) >= CLUB_HEAD_CONTACT_MIN_FORWARD_ALIGNMENT;
+  return HORIZONTAL_CONTACT_DIRECTION.dot(FORWARD_ALIGNMENT_DIRECTION);
+}
+
+function assignImpactDebugInfo(debugInfo, patch) {
+  if (!debugInfo || !patch) {
+    return;
+  }
+
+  Object.assign(debugInfo, patch);
 }

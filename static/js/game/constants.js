@@ -115,11 +115,11 @@ export const CLUB_HEAD_COLLIDER_SIDE_OFFSET = 0.1;
 // Local-space direction considered "forward" for launch calculations.
 export const CLUB_HEAD_LAUNCH_DIRECTION_LOCAL = new THREE.Vector3(0, 0, 1);
 // Minimum club-head speed required to count as a normal impact.
-export const CLUB_HEAD_IMPACT_MIN_SPEED = 5;
+export const CLUB_HEAD_IMPACT_MIN_SPEED = 0.5;
 // Lower impact threshold specifically for putters.
 export const PUTTER_CLUB_HEAD_IMPACT_MIN_SPEED = 0.5;
 // Ignore live launches when the measured club speed is too small relative to the current aiming preview speed.
-export const CLUB_HEAD_AIMING_PREVIEW_LAUNCH_MIN_SPEED_RATIO = 0.4;
+export const CLUB_HEAD_AIMING_PREVIEW_LAUNCH_MIN_SPEED_RATIO = 0.05;
 // Minimum club speed that can trigger the whoosh sound.
 export const CLUB_SWING_WHOOSH_MIN_SPEED = 8;
 // Speed where the whoosh sound reaches its max intensity mapping.
@@ -248,6 +248,14 @@ export const FREE_CAMERA_PITCH_LIMIT_DEGREES = 85;
 
 
 // Render pixel ratio cap for performance. Higher values improve sharpness at higher GPU cost.
+export const RENDER_PIXEL_RATIO_LIMIT = 2.0;
+
+// Swing simulation configuration
+export const SWING_SIMULATION_STEP_SECONDS = 1 / 120;
+export const SWING_SIMULATION_MAX_CATCHUP_SECONDS = 0.25;
+export const SWING_SIMULATION_MAX_STEPS_PER_FRAME = 30;
+export const SWING_PACKET_BUFFER_LIMIT = 96;
+
 export const MAX_RENDER_PIXEL_RATIO = 0.65;
 // Update interval for camera debug/info labels.
 export const CAMERA_LABEL_UPDATE_INTERVAL_MS = 120;

@@ -33,14 +33,18 @@ const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 const orientationEventName = getOrientationEventName();
 const motionEventName = getMotionEventName();
 const CLUB_SHAFT_AXIS_LOCAL = new THREE.Vector3(0, -1, 0);
+const CLUB_FACE_AXIS_LOCAL = new THREE.Vector3(1, 0, 0);
 const ANGULAR_VELOCITY_LOCAL = new THREE.Vector3();
 const SHAFT_TWIST_COMPONENT = new THREE.Vector3();
+const DEBUG_AXIS_WORLD = new THREE.Vector3();
+const DEBUG_CALIBRATED_QUATERNION = new THREE.Quaternion();
 
 const SWING_SPEED_FOLLOW_RATE = 8;
 const SWING_SPEED_DECAY_RATE = 4;
 const MOTION_FRESHNESS_LIMIT_MS = 250;
 const DEBUG_QUATERNION_DECIMALS = 1;
 const DEBUG_ANGULAR_SPEED_DECIMALS = 1;
+const DEBUG_HEADING_DECIMALS = 1;
 
 const rawQuaternion = new THREE.Quaternion();
 const calibratedQuaternion = new THREE.Quaternion();
@@ -77,6 +81,14 @@ let decayingPerpendicularAngularSpeedRadiansPerSecond = 0;
 let lastMotionSampleTimeMs = 0;
 let lastMotionDebugUpdateTimeMs = 0;
 let packetSequence = 0;
+let lastOrientationDebugState = {
+  source: 'none',
+  absolute: false,
+  headingDegrees: null,
+  alphaDegrees: null,
+  betaDegrees: null,
+  gammaDegrees: null,
+};
 
 neutralInverse.identity();
 installButtonFocusGuard();
@@ -92,7 +104,7 @@ roomCodeInput?.addEventListener('input', () => {
 });
 
 window.addEventListener('beforeunload', () => {
-  void controllerSession?.close();
+  void controllerSession?.close({ preserveDisconnectCleanup: true });
 });
 
 calibrateButton.addEventListener('click', () => {
@@ -141,13 +153,22 @@ if (orientationEventName) {
       return;
     }
 
-    const alpha = THREE.MathUtils.degToRad(event.alpha ?? 0);
-    const beta = THREE.MathUtils.degToRad(event.beta ?? 0);
-    const gamma = THREE.MathUtils.degToRad(event.gamma ?? 0);
-    const orient = THREE.MathUtils.degToRad(window.screen.orientation?.angle ?? window.orientation ?? 0);
+    const orientationSample = resolveOrientationSample(event);
+    const alpha = THREE.MathUtils.degToRad(orientationSample.alphaDegreesForQuaternion);
+    const beta = THREE.MathUtils.degToRad(orientationSample.betaDegrees);
+    const gamma = THREE.MathUtils.degToRad(orientationSample.gammaDegrees);
+    const orient = THREE.MathUtils.degToRad(orientationSample.screenOrientationDegrees);
 
     rawQuaternion.copy(deviceOrientationToQuaternion(alpha, beta, gamma, orient));
     hasOrientation = true;
+    lastOrientationDebugState = {
+      source: orientationSample.source,
+      absolute: orientationSample.absolute,
+      headingDegrees: orientationSample.headingDegrees,
+      alphaDegrees: orientationSample.alphaDegrees,
+      betaDegrees: orientationSample.betaDegrees,
+      gammaDegrees: orientationSample.gammaDegrees,
+    };
     updateDebugLabel();
   });
 }
@@ -519,7 +540,94 @@ function updateDebugLabel() {
   const perpendicularAngularSpeedRadiansPerSecond = getOutboundPerpendicularAngularSpeedRadiansPerSecond();
   const motionState = hasMotion ? `${perpendicularAngularSpeedRadiansPerSecond.toFixed(DEBUG_ANGULAR_SPEED_DECIMALS)} rad/s` : 'gyro waiting';
   const ageMs = Math.round(getMotionAgeMilliseconds());
-  debugLabel.textContent = `ori ${formatQuaternion(rawQuaternion)} | omega ${motionState} | age ${ageMs} ms`;
+  const rawHeadingText = formatHeadingDegrees(lastOrientationDebugState.headingDegrees);
+  const packetHeadingText = formatHeadingDegrees(getQuaternionHeadingDegrees(getDebugCalibratedQuaternion()));
+  const orientationState = lastOrientationDebugState.absolute ? 'abs' : 'rel';
+  const alphaText = formatHeadingDegrees(lastOrientationDebugState.alphaDegrees);
+  const betaText = formatSignedDegrees(lastOrientationDebugState.betaDegrees);
+  const gammaText = formatSignedDegrees(lastOrientationDebugState.gammaDegrees);
+  debugLabel.textContent = `ori ${formatQuaternion(rawQuaternion)} | hdg ${rawHeadingText} ${lastOrientationDebugState.source}/${orientationState} | pkt ${packetHeadingText} | a/b/g ${alphaText}/${betaText}/${gammaText} | omega ${motionState} | age ${ageMs} ms`;
+}
+
+/**
+ * Prefers Safari's compass heading when available because plain alpha can be relative-only on some phones.
+ */
+function resolveOrientationSample(event) {
+  const alphaDegrees = normalizeDegrees(Number(event?.alpha ?? 0));
+  const betaDegrees = sanitizeFiniteDegrees(event?.beta);
+  const gammaDegrees = sanitizeFiniteDegrees(event?.gamma);
+  const screenOrientationDegrees = sanitizeFiniteDegrees(window.screen.orientation?.angle ?? window.orientation);
+  const compassHeadingDegrees = sanitizeCompassHeading(event?.webkitCompassHeading);
+  if (compassHeadingDegrees != null) {
+    return {
+      source: 'compass',
+      absolute: true,
+      headingDegrees: compassHeadingDegrees,
+      alphaDegrees,
+      alphaDegreesForQuaternion: normalizeDegrees(360 - compassHeadingDegrees),
+      betaDegrees,
+      gammaDegrees,
+      screenOrientationDegrees,
+    };
+  }
+
+  return {
+    source: event?.absolute ? 'alpha' : 'alpha?',
+    absolute: event?.absolute === true,
+    headingDegrees: alphaDegreesToHeadingDegrees(alphaDegrees),
+    alphaDegrees,
+    alphaDegreesForQuaternion: alphaDegrees,
+    betaDegrees,
+    gammaDegrees,
+    screenOrientationDegrees,
+  };
+}
+
+/**
+ * Estimates the horizontal heading of the outgoing calibrated pose so the phone can verify what the viewer receives.
+ */
+function getQuaternionHeadingDegrees(quaternion) {
+  DEBUG_AXIS_WORLD.copy(CLUB_FACE_AXIS_LOCAL).applyQuaternion(quaternion);
+  DEBUG_AXIS_WORLD.y = 0;
+  if (DEBUG_AXIS_WORLD.lengthSq() <= 1e-8) {
+    return null;
+  }
+
+  DEBUG_AXIS_WORLD.normalize();
+  return normalizeDegrees(THREE.MathUtils.radToDeg(Math.atan2(DEBUG_AXIS_WORLD.x, -DEBUG_AXIS_WORLD.z)));
+}
+
+function getDebugCalibratedQuaternion() {
+  return DEBUG_CALIBRATED_QUATERNION.copy(neutralInverse).multiply(rawQuaternion).normalize();
+}
+
+function formatHeadingDegrees(value) {
+  return Number.isFinite(value)
+    ? `${normalizeDegrees(value).toFixed(DEBUG_HEADING_DECIMALS)} deg`
+    : '--';
+}
+
+function formatSignedDegrees(value) {
+  return Number.isFinite(value)
+    ? `${value >= 0 ? '+' : ''}${value.toFixed(DEBUG_HEADING_DECIMALS)} deg`
+    : '--';
+}
+
+function sanitizeFiniteDegrees(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function sanitizeCompassHeading(value) {
+  return Number.isFinite(Number(value)) ? normalizeDegrees(Number(value)) : null;
+}
+
+function alphaDegreesToHeadingDegrees(alphaDegrees) {
+  return normalizeDegrees(360 - alphaDegrees);
+}
+
+function normalizeDegrees(value) {
+  const normalized = Number(value) % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
 }
 
 function deviceOrientationToQuaternion(alpha, beta, gamma, orient) {

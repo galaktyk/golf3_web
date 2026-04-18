@@ -16,10 +16,18 @@ import {
 } from 'firebase/database';
 
 import { defaultIceServers, firebaseConfig } from '/static/js/session/firebaseConfig.js';
-import { generateRoomCode, isCompleteRoomCode, normalizeRoomCode } from '/static/js/session/roomCode.js';
+import {
+  ensureStoredViewerHostId,
+  generateRoomCode,
+  isCompleteRoomCode,
+  normalizeRoomCode,
+} from '/static/js/session/roomCode.js';
 
 const SWING_CHANNEL_LABEL = 'swing';
 const CONTROL_CHANNEL_LABEL = 'control';
+const ROOM_RECLAIM_WAIT_MS = 2500;
+const ROOM_RECLAIM_POLL_INTERVAL_MS = 100;
+const RTC_DEBUG_PREFIX = '[golf3 rtc]';
 
 let cachedApp = null;
 let cachedAuthPromise = null;
@@ -43,12 +51,17 @@ async function ensureAnonymousUser() {
   const app = getFirebaseApp();
   const auth = getAuth(app);
   if (auth.currentUser) {
+    logRtcDebug('reusing anonymous auth user', { uid: auth.currentUser.uid });
     return auth.currentUser;
   }
 
   if (!cachedAuthPromise) {
+    logRtcDebug('signing in anonymously');
     cachedAuthPromise = signInAnonymously(auth)
-      .then((credential) => credential.user)
+      .then((credential) => {
+        logRtcDebug('anonymous sign-in completed', { uid: credential.user.uid });
+        return credential.user;
+      })
       .finally(() => {
         cachedAuthPromise = null;
       });
@@ -60,14 +73,45 @@ async function ensureAnonymousUser() {
 /**
  * Creates a room atomically so short-code collisions do not clobber an active session.
  */
-async function createUniqueRoom(database, hostUid, preferredRoomId = '') {
+async function createUniqueRoom(database, hostUid, preferredRoomId = '', hostClientId = '') {
   const attemptedRoomIds = new Set();
   const normalizedPreferredRoomId = normalizeRoomCode(preferredRoomId);
+  logRtcDebug('creating viewer room', {
+    hostUid,
+    hostClientId,
+    preferredRoomId: normalizedPreferredRoomId,
+  });
+
   if (isCompleteRoomCode(normalizedPreferredRoomId)) {
     attemptedRoomIds.add(normalizedPreferredRoomId);
-    const preferredReservation = await tryReserveRoom(database, normalizedPreferredRoomId, hostUid);
+    const preferredReservation = await tryReserveRoom(database, normalizedPreferredRoomId, hostUid, hostClientId);
     if (preferredReservation.committed) {
+      logRtcDebug('reserved preferred room', { roomId: normalizedPreferredRoomId });
       return normalizedPreferredRoomId;
+    }
+
+    const preferredRoom = preferredReservation.snapshot.val();
+    logRtcDebug('preferred room already occupied', {
+      roomId: normalizedPreferredRoomId,
+      ownedBySameHost: isRoomOwnedByHost(preferredRoom, hostUid, hostClientId),
+      room: summarizeRoom(preferredRoom),
+    });
+
+    if (isRoomOwnedByHost(preferredRoom, hostUid, hostClientId)) {
+      const reclaimedReservation = await reclaimRoomForHost(database, normalizedPreferredRoomId, hostUid, hostClientId);
+      if (reclaimedReservation.committed) {
+        logRtcDebug('reclaimed preferred room for same host', { roomId: normalizedPreferredRoomId });
+        return normalizedPreferredRoomId;
+      }
+
+      const released = await waitForRoomRelease(database, normalizedPreferredRoomId, hostUid, hostClientId);
+      if (released) {
+        const retriedReservation = await tryReserveRoom(database, normalizedPreferredRoomId, hostUid, hostClientId);
+        if (retriedReservation.committed) {
+          logRtcDebug('reserved preferred room after waiting for release', { roomId: normalizedPreferredRoomId });
+          return normalizedPreferredRoomId;
+        }
+      }
     }
   }
 
@@ -78,16 +122,23 @@ async function createUniqueRoom(database, hostUid, preferredRoomId = '') {
     }
 
     attemptedRoomIds.add(roomId);
-    const transactionResult = await tryReserveRoom(database, roomId, hostUid);
+    const transactionResult = await tryReserveRoom(database, roomId, hostUid, hostClientId);
     if (transactionResult.committed) {
+      logRtcDebug('reserved fallback room', { roomId, attempt: attempt + 1 });
       return roomId;
     }
+
+    logRtcDebug('fallback room collision', {
+      roomId,
+      attempt: attempt + 1,
+      room: summarizeRoom(transactionResult.snapshot.val()),
+    });
   }
 
   throw new Error('Unable to reserve a game client code. Try again.');
 }
 
-function tryReserveRoom(database, roomId, hostUid) {
+function tryReserveRoom(database, roomId, hostUid, hostClientId) {
   const roomRef = ref(database, `rooms/${roomId}`);
   return runTransaction(roomRef, (currentRoom) => {
     if (currentRoom !== null) {
@@ -96,11 +147,88 @@ function tryReserveRoom(database, roomId, hostUid) {
 
     return {
       hostUid,
+      hostClientId,
       guestUid: null,
       state: 'waiting',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
+  });
+}
+
+/**
+ * Resets an existing room in place when it already belongs to the same viewer browser.
+ */
+function reclaimRoomForHost(database, roomId, hostUid, hostClientId) {
+  const roomRef = ref(database, `rooms/${roomId}`);
+  return runTransaction(roomRef, (currentRoom) => {
+    if (!isRoomOwnedByHost(currentRoom, hostUid, hostClientId)) {
+      return undefined;
+    }
+
+    return createFreshRoomState(hostUid, hostClientId, currentRoom?.createdAt);
+  });
+}
+
+/**
+ * Matches an occupied room to the same viewer browser so refreshes can reclaim its code.
+ */
+function isRoomOwnedByHost(room, hostUid, hostClientId) {
+  if (!room?.hostUid) {
+    return false;
+  }
+
+  if (hostClientId && room.hostClientId) {
+    return room.hostClientId === hostClientId;
+  }
+
+  return room.hostUid === hostUid;
+}
+
+/**
+ * Waits briefly for the previous tab's disconnect cleanup to release the saved room code.
+ */
+async function waitForRoomRelease(database, roomId, hostUid, hostClientId) {
+  const roomRef = ref(database, `rooms/${roomId}`);
+  const deadline = Date.now() + ROOM_RECLAIM_WAIT_MS;
+  logRtcDebug('waiting for preferred room to release', {
+    roomId,
+    waitMs: ROOM_RECLAIM_WAIT_MS,
+  });
+
+  while (Date.now() < deadline) {
+    const snapshot = await get(roomRef);
+    const room = snapshot.val();
+    if (!room) {
+      logRtcDebug('preferred room released', { roomId });
+      return true;
+    }
+
+    if (!isRoomOwnedByHost(room, hostUid, hostClientId)) {
+      logRtcDebug('preferred room is owned by another host', {
+        roomId,
+        room: summarizeRoom(room),
+      });
+      return false;
+    }
+
+    // Refresh creates a new tab before the old tab's disconnect cleanup finishes.
+    await delay(ROOM_RECLAIM_POLL_INTERVAL_MS);
+  }
+
+  const finalSnapshot = await get(roomRef);
+  const released = !finalSnapshot.exists();
+  logRtcDebug('finished waiting for preferred room release', {
+    roomId,
+    released,
+    room: summarizeRoom(finalSnapshot.val()),
+  });
+  return released;
+}
+
+function delay(timeoutMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, timeoutMs);
   });
 }
 
@@ -413,7 +541,13 @@ export async function createViewerRtcSession({
 }) {
   const user = await ensureAnonymousUser();
   const database = getDatabase(getFirebaseApp());
-  const roomId = await createUniqueRoom(database, user.uid, preferredRoomId);
+  const hostClientId = ensureStoredViewerHostId();
+  logRtcDebug('starting viewer session', {
+    preferredRoomId: normalizeRoomCode(preferredRoomId),
+    hostUid: user.uid,
+    hostClientId,
+  });
+  const roomId = await createUniqueRoom(database, user.uid, preferredRoomId, hostClientId);
   const session = createBaseSession({
     role: 'viewer',
     roomId,
@@ -477,6 +611,7 @@ export async function createViewerRtcSession({
       targetRef: roomRef,
     },
   ]);
+  logRtcDebug('registered viewer disconnect cleanup', { roomId });
 
   transport.peerConnection.addEventListener('icecandidate', (event) => {
     if (!event.candidate) {
@@ -501,6 +636,10 @@ export async function createViewerRtcSession({
   const unsubscribeRoom = onValue(roomRef, (snapshot) => {
     const room = snapshot.val();
     remoteUid = room?.guestUid ?? null;
+    logRtcDebug('viewer room updated', {
+      roomId,
+      room: summarizeRoom(room),
+    });
 
     if (!remoteUid) {
       publishRoomState('offer-ready');
@@ -560,6 +699,7 @@ export async function createViewerRtcSession({
   await set(offerRef, serializeDescription(transport.peerConnection.localDescription, user.uid));
   publishRoomState('offer-ready');
   session.emitState({ signalingState: 'waiting-for-joiner' });
+  logRtcDebug('viewer offer published', { roomId });
 
   return {
     roomId,
@@ -572,13 +712,61 @@ export async function createViewerRtcSession({
     sendControlMessage(payload) {
       return transport.sendControlMessage(payload);
     },
-    async close() {
+    /**
+     * Closes the viewer session. Unload closes keep disconnect cleanup armed because the page may die before explicit deletes finish.
+     */
+    async close({ preserveDisconnectCleanup = false } = {}) {
+      logRtcDebug('closing viewer session', {
+        roomId,
+        preserveDisconnectCleanup,
+      });
       session.closeCleanup();
-      await viewerDisconnectCleanup?.cancel();
       transport.close();
+
+      if (preserveDisconnectCleanup) {
+        return;
+      }
+
+      await viewerDisconnectCleanup?.cancel();
       await remove(roomRef);
+      logRtcDebug('viewer room removed explicitly', { roomId });
     },
   };
+}
+
+function createFreshRoomState(hostUid, hostClientId, createdAt = Date.now()) {
+  return {
+    hostUid,
+    hostClientId,
+    guestUid: null,
+    state: 'waiting',
+    createdAt,
+    updatedAt: Date.now(),
+  };
+}
+
+function summarizeRoom(room) {
+  if (!room) {
+    return null;
+  }
+
+  return {
+    hostUid: room.hostUid ?? null,
+    hostClientId: room.hostClientId ?? null,
+    guestUid: room.guestUid ?? null,
+    state: room.state ?? null,
+    hasDescriptions: Boolean(room.descriptions),
+    mailboxKeys: room.mailboxes ? Object.keys(room.mailboxes) : [],
+  };
+}
+
+function logRtcDebug(message, details) {
+  if (details === undefined) {
+    console.info(RTC_DEBUG_PREFIX, message);
+    return;
+  }
+
+  console.info(RTC_DEBUG_PREFIX, message, details);
 }
 
 /**
@@ -703,10 +891,18 @@ export async function createControllerRtcSession({
     sendControlMessage(payload) {
       return transport.sendControlMessage(payload);
     },
-    async close() {
+    /**
+     * Closes the controller session. Unload closes rely on server-side disconnect cleanup instead of explicit writes.
+     */
+    async close({ preserveDisconnectCleanup = false } = {}) {
       session.closeCleanup();
-      await controllerDisconnectCleanup.cancel();
       transport.close();
+
+      if (preserveDisconnectCleanup) {
+        return;
+      }
+
+      await controllerDisconnectCleanup.cancel();
       await update(roomRef, {
         guestUid: null,
         state: 'waiting',

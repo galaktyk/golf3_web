@@ -31,7 +31,11 @@ import {
   MOVE_MODE_LABEL_HEIGHT,
   WORLD_FORWARD,
 } from '/static/js/game/constants.js';
-import { configureFlatShadedMaterials, configureUnlitMaterials } from '/static/js/game/materials.js';
+import {
+  configureFlatShadedMaterials,
+  configureMaterialTextureAnisotropy,
+  configureUnlitMaterials,
+} from '/static/js/game/materials.js';
 import { createSwingMatcher } from '/static/js/game/swingMatcher.js';
 
 const DEBUG_PARAMS = new URLSearchParams(window.location.search);
@@ -61,6 +65,8 @@ export function loadViewerModels(viewerScene, onStatus) {
   loader.load(
     MAP_MODEL_PATH,
     (gltf) => {
+      const supportedAnisotropy = viewerScene.renderer.capabilities.getMaxAnisotropy();
+      configureMaterialTextureAnisotropy(gltf.scene, Math.min(16, supportedAnisotropy));
       configureUnlitMaterials(gltf.scene);
       viewerScene.mapRoot.add(gltf.scene);
       viewerScene.setMapBounds(new THREE.Box3().setFromObject(viewerScene.mapRoot));

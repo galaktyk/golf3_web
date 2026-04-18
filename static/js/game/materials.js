@@ -26,6 +26,24 @@ export function configureFlatShadedMaterials(root) {
   });
 }
 
+/**
+ * Applies anisotropic filtering to all textures referenced by mesh materials under a scene subtree.
+ */
+export function configureMaterialTextureAnisotropy(root, anisotropy) {
+  if (!root || !Number.isFinite(anisotropy) || anisotropy < 1) {
+    return;
+  }
+
+  root.traverse((node) => {
+    if (!node.isMesh) {
+      return;
+    }
+
+    const materials = Array.isArray(node.material) ? node.material : [node.material];
+    materials.forEach((material) => applyTextureAnisotropy(material, anisotropy));
+  });
+}
+
 function createUnlitMaterial(sourceMaterial, sourceNode) {
   if (!sourceMaterial) {
     return applyAnimationMaterialFlags(new THREE.MeshBasicMaterial({ color: '#ffffff' }), sourceNode, null);
@@ -90,4 +108,18 @@ function applyAnimationMaterialFlags(material, sourceNode, sourceMaterial) {
 
   material.needsUpdate = true;
   return material;
+}
+
+function applyTextureAnisotropy(material, anisotropy) {
+  if (!material) {
+    return;
+  }
+
+  for (const key of ['map', 'alphaMap']) {
+    const texture = material[key];
+    if (texture) {
+      texture.anisotropy = anisotropy;
+      texture.needsUpdate = true;
+    }
+  }
 }

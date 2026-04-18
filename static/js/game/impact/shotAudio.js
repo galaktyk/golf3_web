@@ -34,32 +34,35 @@ const SURFACE_HIT_AUDIO_PATHS = {
 };
 
 const AUDIO_UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchstart'];
+const AudioContextCtor = window.AudioContext ?? window.webkitAudioContext ?? null;
 
 export function createShotImpactAudio() {
+  const audioEngine = createAudioEngine();
   const clips = {
-    light: createClipState(SHOT_AUDIO_PATHS.light),
-    medium: createClipState(SHOT_AUDIO_PATHS.medium),
-    practice: createClipState(SHOT_AUDIO_PATHS.practice),
-    strong: createClipState(SHOT_AUDIO_PATHS.strong),
-    pangya: createClipState(SHOT_AUDIO_PATHS.pangya),
-    clubChange: createClipState(SHOT_AUDIO_PATHS.clubChange),
-    whoosh: createClipState(SHOT_AUDIO_PATHS.whoosh),
+    light: createClipState(SHOT_AUDIO_PATHS.light, audioEngine),
+    medium: createClipState(SHOT_AUDIO_PATHS.medium, audioEngine),
+    practice: createClipState(SHOT_AUDIO_PATHS.practice, audioEngine),
+    strong: createClipState(SHOT_AUDIO_PATHS.strong, audioEngine),
+    pangya: createClipState(SHOT_AUDIO_PATHS.pangya, audioEngine),
+    clubChange: createClipState(SHOT_AUDIO_PATHS.clubChange, audioEngine),
+    whoosh: createClipState(SHOT_AUDIO_PATHS.whoosh, audioEngine),
   };
   const surfaceClips = Object.fromEntries(
-    Object.entries(SURFACE_HIT_AUDIO_PATHS).map(([surfaceType, src]) => [surfaceType, createClipState(src)]),
+    Object.entries(SURFACE_HIT_AUDIO_PATHS).map(([surfaceType, src]) => [surfaceType, createClipState(src, audioEngine)]),
   );
 
   const unlockAudio = () => {
     removeUnlockListeners(unlockAudio);
-    primeClip(clips.light.base);
-    primeClip(clips.medium.base);
-    primeClip(clips.practice.base);
-    primeClip(clips.strong.base);
-    primeClip(clips.pangya.base);
-    primeClip(clips.clubChange.base);
-    primeClip(clips.whoosh.base);
+    audioEngine.resume();
+    warmClip(clips.light);
+    warmClip(clips.medium);
+    warmClip(clips.practice);
+    warmClip(clips.strong);
+    warmClip(clips.pangya);
+    warmClip(clips.clubChange);
+    warmClip(clips.whoosh);
     for (const clipState of Object.values(surfaceClips)) {
-      primeClip(clipState.base);
+      warmClip(clipState);
     }
   };
 
@@ -98,15 +101,58 @@ export function createShotImpactAudio() {
   };
 }
 
-function createClipState(src) {
-  const base = new Audio(src);
-  base.preload = 'auto';
-  base.volume = SHOT_AUDIO_VOLUME;
-  base.load();
+/**
+ * Stores both the decoded buffer state and a media-element fallback for browsers
+ * where Web Audio is unavailable or a fetch/decode step fails.
+ */
+function createClipState(src, audioEngine) {
+  const fallbackAudio = new Audio(src);
+  fallbackAudio.preload = 'none';
+  fallbackAudio.volume = SHOT_AUDIO_VOLUME;
+
+  const clipState = {
+    src,
+    audioEngine,
+    fallbackAudio,
+    activeFallbackClones: new Set(),
+    buffer: null,
+    bufferPromise: null,
+    bufferError: null,
+  };
+
+  primeClipBuffer(clipState);
+
+  return clipState;
+}
+
+function createAudioEngine() {
+  if (!AudioContextCtor) {
+    return {
+      context: null,
+      masterGain: null,
+      isSupported: false,
+      resume() {
+        return Promise.resolve();
+      },
+    };
+  }
+
+  const context = new AudioContextCtor();
+  const masterGain = context.createGain();
+  masterGain.gain.value = 1;
+  masterGain.connect(context.destination);
 
   return {
-    base,
-    activeClones: new Set(),
+    context,
+    masterGain,
+    isSupported: true,
+    resume() {
+      if (context.state === 'running') {
+        return Promise.resolve();
+      }
+
+      return context.resume().catch(() => {});
+    },
   };
 }
 
@@ -145,29 +191,66 @@ function resolveSurfaceImpactClip(surfaceClips, surfaceType) {
   return surfaceClips[SURFACE_TYPES.DEFAULT] ?? null;
 }
 
-function playClip(clipState, volume = clipState.base.volume) {
+function playClip(clipState, volume = SHOT_AUDIO_VOLUME) {
   const resolvedVolume = Math.max(0, Math.min(volume, 1));
 
-  if (isClipAvailable(clipState.base)) {
-    clipState.base.currentTime = 0;
-    clipState.base.volume = resolvedVolume;
-    const playPromise = clipState.base.play();
+  if (playBufferedClip(clipState, resolvedVolume)) {
+    return;
+  }
+
+  playFallbackClip(clipState, resolvedVolume);
+}
+
+function playBufferedClip(clipState, volume) {
+  if (!clipState.audioEngine.isSupported || !clipState.buffer) {
+    return false;
+  }
+
+  const { context, masterGain } = clipState.audioEngine;
+  if (!context || context.state !== 'running') {
+    return false;
+  }
+
+  const source = context.createBufferSource();
+  source.buffer = clipState.buffer;
+
+  const gainNode = context.createGain();
+  gainNode.gain.value = volume;
+
+  source.connect(gainNode);
+  gainNode.connect(masterGain);
+  source.start(0);
+  return true;
+}
+
+function playFallbackClip(clipState, volume) {
+  const baseClip = clipState.fallbackAudio;
+
+  if (baseClip.preload !== 'auto') {
+    baseClip.preload = 'auto';
+    baseClip.load();
+  }
+
+  if (isClipAvailable(baseClip)) {
+    baseClip.currentTime = 0;
+    baseClip.volume = volume;
+    const playPromise = baseClip.play();
     if (playPromise?.catch) {
       playPromise.catch(() => {});
     }
     return;
   }
 
-  const playbackClip = clipState.base.cloneNode();
-  playbackClip.volume = resolvedVolume;
+  const playbackClip = baseClip.cloneNode();
+  playbackClip.volume = volume;
   playbackClip.preload = 'auto';
   playbackClip.currentTime = 0;
-  clipState.activeClones.add(playbackClip);
+  clipState.activeFallbackClones.add(playbackClip);
 
   const releaseClip = () => {
     playbackClip.pause();
     playbackClip.currentTime = 0;
-    clipState.activeClones.delete(playbackClip);
+    clipState.activeFallbackClones.delete(playbackClip);
   };
 
   playbackClip.addEventListener('ended', releaseClip, { once: true });
@@ -176,7 +259,7 @@ function playClip(clipState, volume = clipState.base.volume) {
   const playPromise = playbackClip.play();
   if (playPromise?.catch) {
     playPromise.catch(() => {
-      clipState.activeClones.delete(playbackClip);
+      clipState.activeFallbackClones.delete(playbackClip);
     });
   }
 }
@@ -214,7 +297,47 @@ function normalizeImpactSpeed(impactSpeedMetersPerSecond, referenceSpeedMetersPe
   return Math.min(impactSpeedMetersPerSecond, referenceSpeedMetersPerSecond) / referenceSpeedMetersPerSecond;
 }
 
-function primeClip(clip) {
+function warmClip(clipState) {
+  primeClipBuffer(clipState);
+  if (!clipState.audioEngine.isSupported) {
+    primeFallbackClip(clipState.fallbackAudio);
+  }
+}
+
+/**
+ * Fetches and decodes the clip once so later playback can reuse the in-memory buffer.
+ */
+function primeClipBuffer(clipState) {
+  if (!clipState.audioEngine.isSupported || clipState.buffer || clipState.bufferPromise || clipState.bufferError) {
+    return clipState.bufferPromise ?? Promise.resolve(clipState.buffer);
+  }
+
+  const { context } = clipState.audioEngine;
+  clipState.bufferPromise = fetch(clipState.src)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Failed to load audio clip: ${clipState.src}`);
+      }
+
+      return response.arrayBuffer();
+    })
+    .then((arrayBuffer) => context.decodeAudioData(arrayBuffer.slice(0)))
+    .then((buffer) => {
+      clipState.buffer = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      clipState.bufferError = error;
+      return null;
+    })
+    .finally(() => {
+      clipState.bufferPromise = null;
+    });
+
+  return clipState.bufferPromise;
+}
+
+function primeFallbackClip(clip) {
   const previousMuted = clip.muted;
   clip.muted = true;
   clip.currentTime = 0;
